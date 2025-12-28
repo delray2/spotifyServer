@@ -203,17 +203,16 @@ app.all("/spotify/*", async (req, res) => {
 /**
  * Poll playback state and push changes to local over WS.
  * This is the only way to approximate “state change forwarding” server-side.  [oai_citation:3‡Spotify for Developers](https://developer.spotify.com/documentation/web-api/reference/get-information-about-the-users-current-playback?utm_source=chatgpt.com)
- */
-async function pollLoop() {
+ */async function pollLoop() {
   for (const [sessionId, session] of sessions.entries()) {
     if (!session.accessToken || !session.ws) continue;
 
     try {
       const r = await fetch(`${SPOTIFY_API_BASE}/v1/me/player`, {
-        headers: { "Authorization": `Bearer ${session.accessToken}` }
+        headers: { Authorization: `Bearer ${session.accessToken}` },
       });
 
-      if (r.status === 204) continue; // No content (nothing playing)
+      if (r.status === 204) continue; // nothing playing
       if (r.status === 401) {
         try { session.ws.send(JSON.stringify({ type: "refresh_required" })); } catch {}
         continue;
@@ -221,8 +220,6 @@ async function pollLoop() {
 
       const data = await r.json();
 
-      // Only push *meaningful* changes.
-      // NOTE: progress_ms changes constantly while playing, so we exclude it from the main hash.
       const coreHash = JSON.stringify({
         is_playing: data.is_playing,
         item_id: data?.item?.id,
@@ -231,10 +228,9 @@ async function pollLoop() {
         shuffle_state: data.shuffle_state,
         repeat_state: data.repeat_state,
         volume_percent: data?.device?.volume_percent,
-        context_uri: data?.context?.uri
+        context_uri: data?.context?.uri,
       });
 
-      // Detect user scrubs/seeks without spamming "normal" progress changes.
       const now = Date.now();
       const last = session._progress || null; // { at, ms, item_id, is_playing }
       let seekDetected = false;
@@ -243,50 +239,44 @@ async function pollLoop() {
         const elapsed = Math.max(0, now - last.at);
         const expected = last.ms + (data.is_playing ? elapsed : 0);
         const drift = Math.abs((data.progress_ms ?? 0) - expected);
-
-        // If the drift is big, the user likely scrubbed (or Spotify reported a jump).
         if (drift > 2500) seekDetected = true;
       }
 
       const coreChanged = coreHash !== session.lastPlayerHash;
 
-      // Push:
-      //  - Any "core" state change (track/play/pause/device/shuffle/repeat/volume/context)
-      //  - A seek/scrub event (progress jumped significantly)
       if (coreChanged || seekDetected) {
         session.lastPlayerHash = coreHash;
         session._progress = {
           at: now,
           ms: data.progress_ms ?? 0,
           item_id: data?.item?.id ?? null,
-          is_playing: !!data.is_playing
+          is_playing: !!data.is_playing,
         };
 
         try {
           session.ws.send(JSON.stringify({
             type: "player_state",
             reason: coreChanged ? "core_change" : "seek",
-            data
+            data,
           }));
         } catch {}
       } else {
-        // Update our progress anchor quietly so seek detection stays accurate
         session._progress = {
           at: now,
           ms: data.progress_ms ?? 0,
           item_id: data?.item?.id ?? null,
-          is_playing: !!data.is_playing
+          is_playing: !!data.is_playing,
         };
       }
-    } catch {}
-      }
-    } catch {
-      // ignore transient errors
+    } catch (e) {
+      // ignore transient errors, optionally log:
+      // console.warn("pollLoop error", sessionId, e);
     }
   }
 
-  setTimeout(pollLoop, 1500); // 1.5s poll (adjust as needed)
+  setTimeout(pollLoop, 1500);
 }
+
 
 pollLoop();
 
